@@ -1,109 +1,169 @@
-# from transformers import pipeline
-
-# # using pipeline API for summarization task
-# summarization = pipeline("summarization")
-# original_text = """
-# Paul Walker is hardly the first actor to die during a production.
-# But Walker's death in November 2013 at the age of 40 after a car crash was especially eerie given his rise to fame in the "Fast and Furious" film franchise.
-# The release of "Furious 7" on Friday offers the opportunity for fans to remember -- and possibly grieve again -- the man that so many have praised as one of the nicest guys in Hollywood.
-# "He was a person of humility, integrity, and compassion," military veteran Kyle Upham said in an email to CNN.
-# Walker secretly paid for the engagement ring Upham shopped for with his bride.
-# "We didn't know him personally but this was apparent in the short time we spent with him.
-# I know that we will never forget him and he will always be someone very special to us," said Upham.
-# The actor was on break from filming "Furious 7" at the time of the fiery accident, which also claimed the life of the car's driver, Roger Rodas.
-# """
-# summary_text = summarization(original_text)[0]['summary_text']
-# print("Summary:", summary_text)
-
-
-# from re import A
-# from transformers import GPT2Tokenizer, TFGPT2Model
-# tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-# model = TFGPT2Model.from_pretrained('gpt2')
-# text = "Replace me by any text you'd like."
-# encoded_input = tokenizer(text, return_tensors='tf')
-# output = model(encoded_input)
-# print(output)
-
-# from transformers import pipeline, set_seed
-# generator = pipeline('text-generation', model='gpt2')
-# set_seed(42)
-# output = generator("Hello, I'm a language model,", max_length=30, num_return_sequences=5)
-# print(output)
-
-# from transformers import AutoTokenizer, AutoModelForCausalLM
-
-# tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-j-6B")
-# model = AutoModelForCausalLM.from_pretrained("EleutherAI/gpt-j-6B")
-
 from datasets import get_dataset_config_names
 from datasets import get_dataset_split_names
 from datasets import load_dataset
+from transformers import Trainer, TrainingArguments
+from transformers import LEDTokenizer, LEDForConditionalGeneration
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
+import torch
+import random
+
+INPUT_MAX = 16384
 
 dataset_name = "pg19"
-# print(get_dataset_split_names('sent_comp'))
-print(get_dataset_config_names(dataset_name))
 
-val_data = load_dataset(dataset_name, split="train")
-# print(val_data.info)
-# for key in val_data:
-#     print(key)
-print(val_data.column_names)
-post_1900 = val_data.filter(lambda x: x["publication_date"] >= 1900)
-first_ten = post_1900[:10]
-print(post_1900["publication_date"])
-print(first_ten["publication_date"])
-# import torch
+# val_data = load_dataset(dataset_name, split="train")
+# print(val_data.column_names)
+# post_1900 = val_data.filter(lambda x: x["publication_date"] >= 1900)
+# first_ten = post_1900[:10]
+# print(post_1900["publication_date"])
+# print(first_ten["publication_date"])
 
-'''
+
+class Pg19_Dataset(Dataset):
+    def __init__(self, data, transform=None, target_transform=None):
+        self.data = data
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        text = self.data[idx]
+        tokenized = self.transform.encode(text, return_tensors="pt")
+        # print(tokenized.shape)
+        label_idx = random.randrange(len(tokenized[0]))
+        # print(tokenized)
+        # print(label_idx)
+
+        item = {}
+        item["input_ids"] = torch.zeros((1, INPUT_MAX))
+        left_boundary = (
+            0 if INPUT_MAX - label_idx < 0 else INPUT_MAX - label_idx
+        )
+        # print(INPUT_MAX)
+        # print(label_idx)
+        # print(left_boundary)
+
+        item["input_ids"][:, left_boundary:] = tokenized[
+            :, max(label_idx - INPUT_MAX, 0) : label_idx
+        ]
+        item["input_ids"] = item["input_ids"].type(torch.IntTensor)
+        """
+
+        amount to pad = 
+        with this it would be 75 
+        min(max - idx, max)
+
+        idx = 25
+        max = 100
+
+        75
+
+        idx = 150
+        max = 100
+        max - 150 = - 50
+
+        we want it to be either less than the number or greater?
+
+        we want it to either be input_max
+        or we want it to be if max - idx < 0, then max, else idx - max
+
+        """
+        # print(item["input_ids"].shape)
+        # print(item["input_ids"])
+
+        item["global_attention_mask"] = torch.zeros_like(item["input_ids"])
+        item["global_attention_mask"][:, 0] = 1
+        # item["num_beams"] = 3
+        # item["max_length"] = 1
+        # item["early_stopping"] = False
+        item["labels"] = tokenized[:, label_idx]
+
+        # print(item["input_ids"])
+        # print(item["input_ids"].shape)
+        # print(item["global_attention_mask"].shape)
+        # print(item["labels"].shape)
+        return item
+
+
+tokenizer = LEDTokenizer.from_pretrained("allenai/led-large-16384-arxiv")
+
+test_data = load_dataset(dataset_name, split="test")["text"]
+test_data = Pg19_Dataset(test_data, tokenizer)
+
+# for i in range(10):
+#     test_data[i]
+# assert 2 == 3
+
+# train_data = load_dataset(dataset_name, split="train")["text"]
+# train_data = Pg19_Dataset(train_data, tokenizer)
+
+# train_dataloader = DataLoader(train_data, batch_size=32, shuffle=True, num_workers=12)
+# test_dataloader = DataLoader(test_data, batch_size=32, shuffle=True, num_workers=12)
+model = LEDForConditionalGeneration.from_pretrained("allenai/led-large-16384-arxiv")
+one = test_data[1]
+print(one.keys())
+print(model(one))
+assert 2 == 3
+
+
+training_args = TrainingArguments(
+    output_dir="./results",  # output directory
+    num_train_epochs=3,  # total number of training epochs
+    per_device_train_batch_size=16,  # batch size per device during training
+    per_device_eval_batch_size=64,  # batch size for evaluation
+    warmup_steps=500,  # number of warmup steps for learning rate scheduler
+    weight_decay=0.01,  # strength of weight decay
+    logging_dir="./logs",  # directory for storing logs
+    logging_steps=10,
+)
+
+# model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased")
+
+trainer = Trainer(
+    model=model,  # the instantiated 🤗 Transformers model to be trained
+    args=training_args,  # training arguments, defined above
+    # train_dataset=train_data,  # training dataset
+    train_dataset=test_data,  # training dataset
+    # eval_dataset=test_data,  # evaluation dataset
+)
+
+trainer.train()
+"""
 okay sooo what do I want to doooooooo
 bananananananannanana
-'''
 
-# from transformers import LEDTokenizer, LEDForConditionalGeneration
+Do I want to do this with pytorch or tensorflow.
+ultimately I'd like to do it with ??????
+I guess pyrorch sounds a bit easier in a way, I'll be using prebuild models for all of this...
 
-# model = LEDForConditionalGeneration.from_pretrained("allenai/led-large-16384-arxiv")
-# tokenizer = LEDTokenizer.from_pretrained("allenai/led-large-16384-arxiv")
+So how do they build up these models?
+they use some strange compressed transformer thing
+https://arxiv.org/pdf/1911.05507.pdf
 
-# ARTICLE_TO_SUMMARIZE = """Transformers (Vaswani et al., 2017) have achieved state-of-the-art
-# results in a wide range of natural language tasks including generative
-# language modeling (Dai et al., 2019; Radford et al., 2019) and discriminative
-# language understanding (Devlin et al., 2019). This success is partly due to
-# the self-attention component which enables the network to capture contextual
-# information from the entire sequence. While powerful, the memory and computational
-# requirements of self-attention grow quadratically with sequence length, making
-# it infeasible (or very expensive) to process long sequences.
-# To address this limitation, we present Longformer, a modified Transformer
-# architecture with a self-attention operation that scales linearly with the
-# sequence length, making it versatile for processing long documents (Fig 1). This
-# is an advantage for natural language tasks such as long document classification,
-# question answering (QA), and coreference resolution, where existing approaches
-# partition or shorten the long context into smaller sequences that fall within the
-# typical 512 token limit of BERT-style pretrained models. Such partitioning could
-# potentially result in loss of important cross-partition information, and to
-# mitigate this problem, existing methods often rely on complex architectures to
-# address such interactions. On the other hand, our proposed Longformer is able to
-# build contextual representations of the entire context using multiple layers of
-# attention, reducing the need for task-specific architectures."""
-# inputs = tokenizer.encode(ARTICLE_TO_SUMMARIZE, return_tensors="pt")
+How does it predict the next thing?
+- how long should the label be?
+one word
+- does it predict one word
+yes it predicts one word (lame I know...)
+- does it predict multiple words?
+no
+- if it is multiple words, how do we tell the model how long to make the thing?
+- is there an end of sentence tag in the bert tokenization?
+- if so we could ahve it use the previous x sentences and summary to complete the next sentence?
+- what if the next sententence is really long
 
-# # Global attention on the first token (cf. Beltagy et al. 2020)
-# global_attention_mask = torch.zeros_like(inputs)
-# global_attention_mask[:, 0] = 1
+- what loss funciton do they use?
+cross entropy
+- do they pass tokenized data into the model and loss and everyting else is done on tokens?
+yes, you do cross entropy on the tokens
 
-# # Generate Summary
-# summary_ids = model.generate(
-#     inputs,
-#     global_attention_mask=global_attention_mask,
-#     num_beams=3,
-#     max_length=32,
-#     early_stopping=True,
-# )
+- can you get perplexity for predicting a sequence rather than one word?
+perplexity is single word
 
-# print(
-#     tokenizer.decode(
-#         summary_ids[0],
-#         skip_special_tokens=True,
-#         clean_up_tokenization_spaces=True,
-#     )
-# )
+can pass pytorch modules into this...
+https://huggingface.co/transformers/custom_datasets.html#fine-tuning-with-trainer 
+https://huggingface.co/transformers/main_classes/trainer.html#transformers.Trainer
+"""

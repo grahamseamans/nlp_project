@@ -1,5 +1,5 @@
 container_name="nlp_container"
-working_dir="/root/"
+working_dir="/home/"
 image_name="nlp_image"
 
 
